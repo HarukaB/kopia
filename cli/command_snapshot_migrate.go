@@ -23,6 +23,7 @@ type commandSnapshotMigrate struct {
 	migrateOverwritePolicies bool
 	migrateLatestOnly        bool
 	migrateParallel          int
+	ignoredMigrateSources    []string
 	applyIgnoreRules         bool
 
 	svc advancedAppServices
@@ -34,6 +35,7 @@ func (c *commandSnapshotMigrate) setup(svc advancedAppServices, parent commandPa
 	cmd.Flag("source-config", "Configuration file for the source repository").Required().ExistingFileVar(&c.migrateSourceConfig)
 	cmd.Flag("sources", "List of sources to migrate").StringsVar(&c.migrateSources)
 	cmd.Flag("all", "Migrate all sources").BoolVar(&c.migrateAll)
+	cmd.Flag("ignore-sources", "List of sources to ignore when migrating all snapshots").StringsVar(&c.ignoredMigrateSources)
 	cmd.Flag("policies", "Migrate policies too").Default("true").BoolVar(&c.migratePolicies)
 	cmd.Flag("overwrite-policies", "Overwrite policies").BoolVar(&c.migrateOverwritePolicies)
 	cmd.Flag("latest-only", "Only migrate the latest snapshot").BoolVar(&c.migrateLatestOnly)
@@ -314,6 +316,41 @@ func (c *commandSnapshotMigrate) filterSnapshotsToMigrate(s []*snapshot.Manifest
 }
 
 func (c *commandSnapshotMigrate) getSourcesToMigrate(ctx context.Context, rep repo.Repository) ([]snapshot.SourceInfo, error) {
+
+	if c.migrateAll {
+		//nolint:wrapcheck
+		sources, err := snapshot.ListSources(ctx, rep)
+		if err != nil {
+			return sources, err
+		}
+		if len(c.ignoredMigrateSources) > 0 {
+			var ignored []snapshot.SourceInfo
+			for _, ims := range c.ignoredMigrateSources {
+				si, err := snapshot.ParseSourceInfo(ims, rep.ClientOptions().Hostname, rep.ClientOptions().Username)
+				if err != nil {
+					return nil, errors.Wrapf(err, "unable to parse %q", ims)
+				}
+				ignored = append(ignored, si)
+			}
+			ignoredMap := make(map[snapshot.SourceInfo]struct{}, len(ignored))
+
+			for _, item := range ignored {
+				ignoredMap[item] = struct{}{}
+			}
+
+			filtered := make([]snapshot.SourceInfo, 0, len(sources))
+
+			for _, item := range sources {
+				if _, exists := ignoredMap[item]; !exists {
+					filtered = append(filtered, item)
+				}
+			}
+
+			sources = filtered
+		}
+		return sources, nil // there should be no errors when the code runs to here, so we return nil
+	}
+
 	if len(c.migrateSources) > 0 {
 		var result []snapshot.SourceInfo
 
@@ -327,11 +364,6 @@ func (c *commandSnapshotMigrate) getSourcesToMigrate(ctx context.Context, rep re
 		}
 
 		return result, nil
-	}
-
-	if c.migrateAll {
-		//nolint:wrapcheck
-		return snapshot.ListSources(ctx, rep)
 	}
 
 	return nil, errors.New("must specify either --all or --sources")
